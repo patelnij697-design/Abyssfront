@@ -1168,3 +1168,101 @@ export function buildViewModel(mode: ToolMode, weapon: WeaponId): THREE.Group {
 
   return g;
 }
+
+export function buildRepulsCrashCorridor(): {
+  group: THREE.Group;
+  hatchDoor: THREE.Mesh;
+  fireExtinguisher: THREE.Group;
+  klaxonLights: THREE.PointLight[];
+} {
+  const group = new THREE.Group();
+  const hullMat = mat(PALETTE.gunmetal, { roughness: 0.45, metalness: 0.72, map: getHullPanelTexture() });
+  const darkMetal = mat(0x202933, { roughness: 0.52, metalness: 0.78 });
+  const deckMat = mat(0x2b3642, { roughness: 0.65, metalness: 0.6, map: getDeckGridTexture() });
+  const orangeMat = mat(PALETTE.orange, { roughness: 0.42, metalness: 0.3 });
+  const boneMat = mat(PALETTE.bone, { roughness: 0.42, metalness: 0.25 });
+  const hazardMat = mat(0xff3322, { emissive: 0xff2211, emissiveIntensity: 2.2 });
+  const fireMat = mat(0xff7718, { emissive: 0xff5500, emissiveIntensity: 2.4 });
+  const cyan = cyanMat();
+
+  // Grated corridor deck (z: -14..13)
+  addPart(group, new THREE.BoxGeometry(5.6, 0.3, 28), deckMat, [0, -0.15, -0.5]);
+  // Ceiling & hull plating
+  addPart(group, new THREE.BoxGeometry(5.8, 0.35, 28), darkMetal, [0, 4.35, -0.5]);
+  // Side bulkhead walls
+  addPart(group, new THREE.BoxGeometry(0.35, 4.4, 28), hullMat, [-2.75, 2.1, -0.5]);
+  addPart(group, new THREE.BoxGeometry(0.35, 4.4, 28), hullMat, [2.75, 2.1, -0.5]);
+  // Aft seal behind spawn
+  addPart(group, new THREE.BoxGeometry(5.6, 4.4, 0.4), darkMetal, [0, 2.1, 13.2]);
+
+  // Glowing emergency floor guide strips leading toward Lifepod 07
+  addPart(group, new THREE.BoxGeometry(0.14, 0.04, 23), hazardMat, [-1.55, 0.02, 0]);
+  addPart(group, new THREE.BoxGeometry(0.14, 0.04, 23), hazardMat, [1.55, 0.02, 0]);
+
+  // Overhead conduit pipes
+  addPart(group, new THREE.CylinderGeometry(0.12, 0.12, 26, 8), orangeMat, [-1.8, 3.85, 0], [Math.PI / 2, 0, 0]);
+  addPart(group, new THREE.CylinderGeometry(0.09, 0.09, 26, 8), darkMetal, [1.8, 3.9, 0], [Math.PI / 2, 0, 0]);
+
+  // Ribbed structural archways + Red emergency klaxons
+  const klaxonLights: THREE.PointLight[] = [];
+  for (const z of [9, 3, -3, -9]) {
+    addPart(group, new THREE.BoxGeometry(0.45, 4.2, 0.45), darkMetal, [-2.42, 2.1, z]);
+    addPart(group, new THREE.BoxGeometry(0.45, 4.2, 0.45), darkMetal, [2.42, 2.1, z]);
+    addPart(group, new THREE.BoxGeometry(5.2, 0.42, 0.45), darkMetal, [0, 4.05, z]);
+
+    addPart(group, new THREE.CylinderGeometry(0.14, 0.16, 0.24, 10), hazardMat, [0, 3.8, z]);
+    if (z !== 3) {
+      const light = new THREE.PointLight(0xff3322, 4.5, 16);
+      light.position.set(0, 3.5, z);
+      group.add(light);
+      klaxonLights.push(light);
+    }
+  }
+
+  // Hull breach fire & jagged debris obstacles along corridor walls
+  addPart(group, new THREE.BoxGeometry(0.55, 1.5, 2.2), darkMetal, [-2.2, 0.75, 5.2], [0, 0.18, -0.25]);
+  addPart(group, new THREE.BoxGeometry(0.35, 0.9, 1.6), fireMat, [-2.4, 1.8, 4.8]);
+  addPart(group, new THREE.BoxGeometry(0.7, 1.1, 1.8), darkMetal, [2.1, 0.55, -0.8], [0, -0.22, 0.15]);
+  addPart(group, new THREE.BoxGeometry(0.3, 1.2, 1.5), fireMat, [2.42, 2.2, -5.2]);
+
+  // Lifepod 07 Embarkation Bulkhead at z = -10.8 (with center doorway gap)
+  addPart(group, new THREE.BoxGeometry(1.85, 4.2, 0.45), orangeMat, [-1.82, 2.1, -10.8]);
+  addPart(group, new THREE.BoxGeometry(1.85, 4.2, 0.45), orangeMat, [1.82, 2.1, -10.8]);
+  addPart(group, new THREE.BoxGeometry(2.1, 1.35, 0.45), orangeMat, [0, 3.55, -10.8]);
+  addPart(group, new THREE.BoxGeometry(2.2, 0.18, 0.52), cyan, [0, 2.86, -10.8]);
+
+  // Animated Lifepod Blast Hatch Door (starts open at x = -2.15, slides to x = 0 on launch)
+  const hatchDoor = addPart(group, new THREE.BoxGeometry(1.95, 2.85, 0.24), darkMetal, [-2.15, 1.42, -10.55]);
+  addPart(hatchDoor, new THREE.BoxGeometry(1.55, 0.2, 0.28), orangeMat, [0, 0.5, 0]);
+  addPart(hatchDoor, new THREE.BoxGeometry(1.55, 0.2, 0.28), orangeMat, [0, -0.5, 0]);
+
+  // Lifepod 07 Launch Cradle Cabin (z = -10.8 to -14.2)
+  addPart(group, new THREE.CylinderGeometry(2.4, 2.4, 3.8, 12, 1, true), boneMat, [0, 1.9, -12.5], [0, 0, 0]);
+  addPart(group, new THREE.CylinderGeometry(2.38, 2.38, 0.25, 12), darkMetal, [0, 0.12, -12.5]);
+  addPart(group, new THREE.CylinderGeometry(2.38, 2.38, 0.25, 12), boneMat, [0, 3.75, -12.5]);
+  // Cradle seat & console
+  addPart(group, new THREE.BoxGeometry(1.1, 0.55, 0.85), darkMetal, [0, 0.5, -11.45]);
+  addPart(group, new THREE.BoxGeometry(0.95, 1.25, 0.25), orangeMat, [0, 1.25, -11.08]);
+  addPart(group, new THREE.BoxGeometry(0.85, 0.45, 0.2), cyan, [0, 1.4, -12.55]);
+
+  const podLight = new THREE.PointLight(0x2ad6ff, 3.2, 9);
+  podLight.position.set(0, 3.0, -12.0);
+  group.add(podLight);
+
+  // Detailed 3D Fire Extinguisher mounted on cabin bracket (detaches & hits camera during ejection)
+  const fireExtinguisher = new THREE.Group();
+  const redTank = mat(0xd91e18, { roughness: 0.32, metalness: 0.45 });
+  const brass = mat(0xd4a63a, { roughness: 0.3, metalness: 0.85 });
+  const rubber = mat(0x14171a, { roughness: 0.8 });
+  addPart(fireExtinguisher, new THREE.CylinderGeometry(0.14, 0.14, 0.62, 14), redTank, [0, 0, 0]);
+  addPart(fireExtinguisher, new THREE.SphereGeometry(0.14, 12, 8), redTank, [0, 0.31, 0]);
+  addPart(fireExtinguisher, new THREE.CylinderGeometry(0.04, 0.05, 0.12, 10), brass, [0, 0.47, 0]);
+  addPart(fireExtinguisher, new THREE.BoxGeometry(0.16, 0.04, 0.04), rubber, [0.05, 0.54, 0]);
+  addPart(fireExtinguisher, new THREE.CylinderGeometry(0.035, 0.055, 0.26, 8), rubber, [-0.14, 0.26, 0.05], [0.4, 0, 0.5]);
+  addPart(fireExtinguisher, new THREE.CylinderGeometry(0.04, 0.04, 0.03, 10), mat(0xffffff, { emissive: 0x4eff9f, emissiveIntensity: 0.5 }), [0, 0.46, 0.05], [Math.PI / 2, 0, 0]);
+  fireExtinguisher.position.set(-1.05, 1.75, -12.35);
+  group.add(fireExtinguisher);
+
+  return { group, hatchDoor, fireExtinguisher, klaxonLights };
+}
+

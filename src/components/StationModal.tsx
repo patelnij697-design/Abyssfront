@@ -234,7 +234,7 @@ export const StationModal: React.FC<StationModalProps> = ({
           return (
             <button
               key={r.id}
-              disabled={!unlocked || !affordable || !!job}
+              disabled={!unlocked || !affordable || (!!job && r.station !== 'builder')}
               onClick={() => onCraft(r.id)}
               className={`flex cursor-pointer flex-col justify-between border p-3.5 text-left transition-colors disabled:cursor-not-allowed ${
                 isThisCrafting

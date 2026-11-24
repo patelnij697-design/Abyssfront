@@ -14,6 +14,7 @@ import {
   Lightbulb,
   Radar,
   RotateCw,
+  Save,
   ScanLine,
   Scissors,
   Shield,
@@ -43,6 +44,7 @@ interface GameHUDProps {
   onPlaceBuild: () => void;
   onCancelBuild: () => void;
   onDeconstruct: () => void;
+  onSkipIntro: () => void;
   onFireChange: (active: boolean) => void;
   onScanChange: (active: boolean) => void;
   onTouchInput: (jx: number, jy: number, vert: number, fire: boolean, scan?: boolean, sprint?: boolean) => void;
@@ -81,6 +83,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   onPlaceBuild,
   onCancelBuild,
   onDeconstruct,
+  onSkipIntro,
   onFireChange,
   onScanChange,
   onTouchInput,
@@ -299,6 +302,121 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     ? Math.min(100, Math.max(0, ((craftJob.total - craftJob.remaining) / Math.max(0.1, craftJob.total)) * 100))
     : 0;
   const craftItem = craftJob ? ITEMS[craftJob.output] : null;
+
+  if (snap.intro) {
+    const intro = snap.intro;
+    return (
+      <div className="pointer-events-none fixed inset-0 z-20 overflow-hidden select-none text-[#e6edf3]">
+        {/* Emergency red visor pulse during evacuation/ejection */}
+        {intro.phase !== 'wake' && (
+          <div
+            className="pointer-events-none fixed inset-0"
+            style={{
+              background: 'radial-gradient(circle at center, transparent 52%, rgba(239, 68, 68, 0.34) 100%)',
+            }}
+          />
+        )}
+
+        {/* Blackout impact fade overlay */}
+        {intro.blackoutAlpha > 0.01 && (
+          <div
+            className="pointer-events-none fixed inset-0 z-40 bg-black"
+            style={{ opacity: intro.blackoutAlpha }}
+          />
+        )}
+
+        {/* Top evacuation alert banner */}
+        <div className="relative z-50 mx-auto mt-4 flex w-fit max-w-[92vw] flex-col items-center border border-[#ff4d4d]/70 bg-[#1a0709]/92 px-5 py-2.5 text-center shadow-2xl">
+          <div className="flex items-center gap-2 font-display text-xs font-bold tracking-widest text-[#ff7676] sm:text-sm">
+            <AlertTriangle size={15} className="shrink-0" />
+            <span>{intro.headline}</span>
+          </div>
+          <div className="mt-1 text-xs text-[#f2dcdc] sm:text-sm">{intro.subtitle}</div>
+        </div>
+
+        {/* Skip Intro Button */}
+        <div
+          className="pointer-events-auto absolute top-4 right-4 z-50"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={onSkipIntro}
+            className="min-h-[42px] cursor-pointer border border-[#e6edf3]/35 bg-[#06121e]/92 px-4 py-2 font-display text-xs font-semibold tracking-wider text-white hover:border-[#2ad6ff] whitespace-nowrap"
+          >
+            Skip Intro
+          </button>
+        </div>
+
+        {/* Center reticle & Board Lifepod 07 prompt during evacuate */}
+        {intro.phase === 'evacuate' && (
+          <>
+            <div className="pointer-events-none fixed inset-0 flex items-center justify-center">
+              <div className="h-3 w-3 rounded-full border border-white/70" />
+            </div>
+
+            {snap.promptText && (
+              <div
+                className="pointer-events-auto absolute bottom-24 left-1/2 -translate-x-1/2"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <button
+                  onClick={onInteract}
+                  className="flex min-h-[44px] cursor-pointer items-center gap-2 border border-[#2ad6ff] bg-[#0a2334]/95 px-5 py-2 font-display text-xs font-bold tracking-wider text-white shadow-xl hover:bg-[#113752] whitespace-nowrap"
+                >
+                  <Hand size={15} className="text-[#2ad6ff]" />
+                  <span>{snap.promptText}</span>
+                </button>
+              </div>
+            )}
+
+            {showControls && (
+              <div
+                className="pointer-events-auto absolute bottom-5 left-5"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <div
+                  ref={stickRef}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    e.preventDefault();
+                    stickPointerId.current = e.pointerId;
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    updateJoystickFromEvent(e.clientX, e.clientY);
+                  }}
+                  onPointerMove={(e) => {
+                    if (stickPointerId.current === e.pointerId) {
+                      e.stopPropagation();
+                      updateJoystickFromEvent(e.clientX, e.clientY);
+                    }
+                  }}
+                  onPointerUp={(e) => {
+                    if (stickPointerId.current === e.pointerId) {
+                      e.stopPropagation();
+                      resetJoystick();
+                    }
+                  }}
+                  onPointerCancel={(e) => {
+                    if (stickPointerId.current === e.pointerId) resetJoystick();
+                  }}
+                  onLostPointerCapture={() => {
+                    if (stickPointerId.current !== null) resetJoystick();
+                  }}
+                  className="relative flex h-28 w-28 touch-none items-center justify-center rounded-full border-2 border-[#ff8a24]/60 bg-[#051019]/65"
+                >
+                  <div
+                    className="pointer-events-none flex h-11 w-11 items-center justify-center rounded-full border border-[#ff8a24] bg-[#ff8a24]/25"
+                    style={{ transform: `translate(${stickKnob.x}px, ${stickKnob.y}px)` }}
+                  >
+                    <div className="h-3 w-3 rounded-full bg-white/80" />
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 overflow-hidden select-none text-[#e6edf3]">
@@ -563,7 +681,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       </div>
 
       {/* Top-Right: PDA Buttons, Blueprint Unlock Notification & Sonar Radar */}
-      <div className="pointer-events-auto absolute top-3 right-3.5 flex max-w-[172px] flex-col items-end gap-2 sm:top-4 sm:right-5 sm:max-w-none">
+      <div
+        className="pointer-events-auto absolute top-3 right-3.5 flex max-w-[180px] flex-col items-end gap-2 sm:top-4 sm:right-5 sm:max-w-none"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
         <div className="flex flex-wrap justify-end gap-1.5">
           <RoundHudButton title="PDA: Missions, Sonar Map & Logs [Tab]" onClick={() => onOpenModal({ type: 'databank', tab: 'missions' })}>
             <BookOpen size={15} />
@@ -576,6 +697,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </RoundHudButton>
           <RoundHudButton title="Tern Dropship Support [T]" onClick={() => onOpenModal({ type: 'tern' })}>
             <Zap size={15} />
+          </RoundHudButton>
+          <RoundHudButton title="Save Slots & Mode Telemetry" onClick={() => onOpenModal({ type: 'saves' })}>
+            <Save size={15} />
           </RoundHudButton>
           <RoundHudButton
             title={muted ? 'Unmute Audio' : 'Mute Audio'}
@@ -686,26 +810,26 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => onRotateBuild(-45)}
-              className="min-h-[34px] cursor-pointer border border-[#e6edf3]/25 bg-[#0b1c2a] px-2.5 py-1 text-[11px] hover:border-[#2ad6ff]"
+              className="min-h-[40px] cursor-pointer border border-[#e6edf3]/25 bg-[#0b1c2a] px-3 py-1.5 text-xs hover:border-[#2ad6ff]"
             >
               -45°
             </button>
             <button
               onClick={() => onRotateBuild(45)}
-              className="min-h-[34px] cursor-pointer border border-[#e6edf3]/25 bg-[#0b1c2a] px-2.5 py-1 text-[11px] hover:border-[#2ad6ff]"
+              className="min-h-[40px] cursor-pointer border border-[#e6edf3]/25 bg-[#0b1c2a] px-3 py-1.5 text-xs hover:border-[#2ad6ff]"
             >
               +45°
             </button>
             <button
               onClick={onPlaceBuild}
               disabled={!snap.buildingValid}
-              className="min-h-[34px] cursor-pointer border border-[#2ad6ff] bg-[#123d54] px-3 py-1 font-semibold text-white hover:bg-[#195372] disabled:opacity-40"
+              className="min-h-[40px] cursor-pointer border border-[#2ad6ff] bg-[#123d54] px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-[#195372] disabled:opacity-40"
             >
               Build
             </button>
             <button
               onClick={onCancelBuild}
-              className="min-h-[34px] cursor-pointer border border-[#e6edf3]/30 px-2.5 py-1 hover:border-white"
+              className="min-h-[40px] cursor-pointer border border-[#e6edf3]/30 px-3 py-1.5 text-xs hover:border-white"
             >
               Cancel
             </button>
@@ -713,15 +837,30 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </div>
       )}
 
+      {!snap.buildingMode && snap.tool === 'builder' && !snap.holstered && !snap.piloting && (
+        <div
+          className="pointer-events-auto absolute top-28 left-1/2 -translate-x-1/2"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => onOpenModal({ type: 'station', station: 'builder' })}
+            className="flex min-h-[40px] cursor-pointer items-center gap-2 border border-[#2ad6ff]/70 bg-[#071826]/94 px-4 py-1.5 font-display text-xs font-semibold text-[#e6edf3] shadow-lg hover:border-[#ff8a24] whitespace-nowrap"
+          >
+            <Hammer size={14} className="text-[#2ad6ff]" />
+            <span>Open Habitat Builder Menu [B]</span>
+          </button>
+        </div>
+      )}
+
       {!snap.buildingMode && snap.deconstructTarget && (
         <div
-          className="pointer-events-auto absolute top-28 left-1/2 flex -translate-x-1/2 items-center gap-2.5 border border-[#ff8a24]/70 bg-[#1a1106]/95 px-3.5 py-1.5 text-xs shadow-lg"
+          className="pointer-events-auto absolute top-40 left-1/2 flex -translate-x-1/2 items-center gap-2.5 border border-[#ff8a24]/70 bg-[#1a1106]/95 px-3.5 py-1.5 text-xs shadow-lg"
           onPointerDown={(e) => e.stopPropagation()}
         >
           <span className="text-[#ffd166]">Target: {snap.deconstructTarget.name}</span>
           <button
             onClick={onDeconstruct}
-            className="min-h-[32px] cursor-pointer border border-[#ff8a24] bg-[#4a2608] px-2.5 py-1 font-semibold text-[#ffe3b3] hover:bg-[#69360b]"
+            className="min-h-[36px] cursor-pointer border border-[#ff8a24] bg-[#4a2608] px-2.5 py-1 font-semibold text-[#ffe3b3] hover:bg-[#69360b]"
           >
             Deconstruct [G]
           </button>
@@ -731,8 +870,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       {/* Subnautica-Inspired Interactive Prompt */}
       {snap.promptText && (
         <button
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={onInteract}
-          className="pointer-events-auto absolute bottom-36 left-1/2 flex min-h-[40px] max-w-[85vw] -translate-x-1/2 cursor-pointer items-center gap-2 border border-[#2ad6ff]/70 bg-[#061522]/92 px-4 py-1.5 font-display text-xs font-semibold tracking-wide text-[#e6edf3] shadow-lg hover:bg-[#0d283d] sm:bottom-36"
+          className="pointer-events-auto absolute bottom-36 left-1/2 flex min-h-[42px] max-w-[85vw] -translate-x-1/2 cursor-pointer items-center gap-2 border border-[#2ad6ff]/70 bg-[#061522]/92 px-4 py-1.5 font-display text-xs font-semibold tracking-wide text-[#e6edf3] shadow-lg hover:bg-[#0d283d] sm:bottom-36"
         >
           <Hand size={14} className="shrink-0 text-[#2ad6ff]" />
           <span className="truncate">{snap.promptText}</span>
@@ -1055,14 +1195,18 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                   <Lightbulb size={12} />
                   {v.lightsOn ? 'Lights' : 'Stealth'}
                 </button>
-                {(v.type === 'hover_skiff' || v.type === 'prawn') && (
-                  <button
-                    onClick={onVehicleBoost}
-                    className="min-h-[34px] cursor-pointer border border-[#ff8a24]/55 bg-[#2a1a08] px-2 py-1 text-[11px] font-semibold text-[#ffd166] hover:border-[#ff8a24]"
-                  >
-                    {v.type === 'hover_skiff' ? (v.boostCd > 0 ? `${Math.ceil(v.boostCd)}s` : 'Boost') : 'Jump'}
-                  </button>
-                )}
+                <button
+                  onClick={onVehicleBoost}
+                  className="min-h-[36px] cursor-pointer border border-[#ff8a24]/55 bg-[#2a1a08] px-2.5 py-1 text-[11px] font-semibold text-[#ffd166] hover:border-[#ff8a24]"
+                >
+                  {v.type === 'prawn'
+                    ? 'Jump'
+                    : v.boostActive > 0
+                    ? 'Boosting'
+                    : v.boostCd > 0
+                    ? `${Math.ceil(v.boostCd)}s`
+                    : 'Boost'}
+                </button>
                 <button
                   onClick={() => onOpenModal({ type: 'inventory' })}
                   className="min-h-[34px] cursor-pointer border border-[#2ad6ff]/40 bg-[#0d2536] px-2 py-1 text-[11px] hover:border-[#2ad6ff]"

@@ -6,6 +6,7 @@ import {
   FileText,
   Hammer,
   Map as MapIcon,
+  Save,
   Wrench,
   X,
   Zap,
@@ -19,6 +20,7 @@ export type PdaSectionKey =
   | 'map'
   | 'databank'
   | 'tern'
+  | 'saves'
   | 'station';
 
 interface PdaShellProps {
@@ -56,6 +58,7 @@ export const PdaShell: React.FC<PdaShellProps> = ({
     { key: 'logs', label: 'Voice Logs', icon: <FileText size={14} />, modal: { type: 'databank', tab: 'logs' } },
     { key: 'databank', label: 'Databank', icon: <BookOpen size={14} />, modal: { type: 'databank', tab: 'databank' } },
     { key: 'tern', label: 'Tern Dropship', icon: <Zap size={14} />, modal: { type: 'tern' } },
+    { key: 'saves', label: 'Save Slots', icon: <Save size={14} />, modal: { type: 'saves' } },
   ];
 
   const showPdaNav = Boolean(onOpenModal && activeSection && activeSection !== 'station');

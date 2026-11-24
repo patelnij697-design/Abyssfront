@@ -122,6 +122,17 @@ class SoundEngine {
     this.playTone(210, 0.12, 'triangle', 0.1);
     setTimeout(() => this.playTone(145, 0.16, 'sine', 0.09), 90);
   }
+
+  public playLaunchRumble() {
+    this.playTone(72, 0.65, 'sawtooth', 0.12);
+    setTimeout(() => this.playTone(58, 0.75, 'triangle', 0.11), 260);
+  }
+
+  public playExtinguisherImpact() {
+    this.playTone(135, 0.18, 'sawtooth', 0.22);
+    setTimeout(() => this.playTone(62, 0.35, 'triangle', 0.2), 30);
+    setTimeout(() => this.playTone(1950, 0.9, 'sine', 0.05), 110);
+  }
 }
 
 export const sound = new SoundEngine();

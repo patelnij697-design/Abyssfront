@@ -8,13 +8,13 @@ import { InventoryModal } from './components/InventoryModal';
 import { DatabankModal } from './components/DatabankModal';
 import { PuzzleModal } from './components/PuzzleModal';
 import { TernModal } from './components/TernModal';
+import { SaveSlotsModal } from './components/SaveSlotsModal';
 import { EndingModal } from './components/EndingModal';
 
 export function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<AbyssfrontEngine | null>(null);
   const [snap, setSnap] = useState<GameSnapshot | null>(null);
-  const [hasSave, setHasSave] = useState(false);
 
   useEffect(() => {
     const el = mountRef.current;
@@ -23,7 +23,6 @@ export function App() {
       setSnap(nextSnap);
     });
     engineRef.current = engine;
-    setHasSave(engine.hasSavedGame());
 
     return () => {
       engine.dispose();
@@ -40,9 +39,10 @@ export function App() {
 
       {snap && !snap.started && (
         <MainMenu
-          hasSave={hasSave}
-          onStart={(creative) => eng?.startNewGame(creative)}
-          onContinue={() => eng?.loadSavedGame()}
+          saveSlots={snap.saveSlots}
+          onStart={(creative, slotId, skipIntro) => eng?.startNewGame(creative, slotId, skipIntro)}
+          onContinue={(slotId) => eng?.loadSavedGame(slotId)}
+          onDeleteSlot={(slotId) => eng?.deleteSaveSlot(slotId)}
         />
       )}
 
@@ -63,6 +63,7 @@ export function App() {
           onPlaceBuild={() => eng?.placeCurrentBuilding()}
           onCancelBuild={() => eng?.setBuildingMode(null)}
           onDeconstruct={() => eng?.deconstructTargetPiece()}
+          onSkipIntro={() => eng?.skipIntro()}
           onFireChange={(active) => eng?.setFiring(active)}
           onScanChange={(active) => eng?.setScanning(active)}
           onTouchInput={(jx, jy, vert, fire, scan, sprint) => eng?.setTouchInput(jx, jy, vert, fire, scan, sprint)}
@@ -120,6 +121,18 @@ export function App() {
         <TernModal
           snap={snap}
           onActivate={(idx) => eng?.activateTernPower(idx)}
+          onOpenModal={(m) => eng?.openModal(m)}
+          onClose={() => eng?.openModal(null)}
+        />
+      )}
+
+      {snap?.activeModal?.type === 'saves' && (
+        <SaveSlotsModal
+          snap={snap}
+          onSaveToSlot={(slotId) => eng?.saveGame(slotId, true)}
+          onLoadSlot={(slotId) => eng?.loadSavedGame(slotId)}
+          onDeleteSlot={(slotId) => eng?.deleteSaveSlot(slotId)}
+          onReturnToMenu={() => eng?.returnToMainMenu()}
           onOpenModal={(m) => eng?.openModal(m)}
           onClose={() => eng?.openModal(null)}
         />

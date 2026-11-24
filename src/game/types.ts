@@ -247,7 +247,30 @@ export type ActiveModal =
   | { type: 'inventory' }
   | { type: 'databank'; tab: 'missions' | 'logs' | 'map' | 'databank' }
   | { type: 'tern' }
+  | { type: 'saves' }
   | { type: 'puzzle'; puzzleId: 'aux_power' | 'coolant_loop' | 'glyph_door' | 'core_terminal' };
+
+export interface SaveSlotMeta {
+  slotId: 1 | 2 | 3;
+  empty: boolean;
+  creative: boolean;
+  savedAt: number;
+  cell: string;
+  biomeName: string;
+  depth: number;
+  activeMissionId: string;
+  missionTitle: string;
+  basesCount: number;
+  vehiclesCount: number;
+}
+
+export interface IntroState {
+  phase: 'evacuate' | 'ejection' | 'impact' | 'wake';
+  timer: number;
+  blackoutAlpha: number;
+  headline: string;
+  subtitle: string;
+}
 
 export interface CraftingJob {
   recipeId: string;
@@ -263,6 +286,9 @@ export interface GameSnapshot {
   started: boolean;
   creative: boolean;
   paused: boolean;
+  activeSaveSlot: 1 | 2 | 3;
+  saveSlots: SaveSlotMeta[];
+  intro: IntroState | null;
   ending: null | 'quiet_tide' | 'last_light';
   freeRoamAfterEnd: boolean;
   escapeTimer: number; // >0 during Ending B 120s escape

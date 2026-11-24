@@ -5,7 +5,9 @@ import {
   BasePieceState,
   CraftingJob,
   GameSnapshot,
+  IntroState,
   ItemId,
+  SaveSlotMeta,
   StationType,
   ToolMode,
   VehicleState,
@@ -33,6 +35,7 @@ import {
   buildProbeCasing,
   buildRepulsAft,
   buildRepulsBow,
+  buildRepulsCrashCorridor,
   buildRepulsMidship,
   buildResourceNodeModel,
   buildSentinelSpire,
@@ -45,7 +48,12 @@ import {
 } from './models';
 import { sound } from './audio';
 
-const SAVE_KEY = 'abyssfront_save_v1';
+const LEGACY_SAVE_KEY = 'abyssfront_save_v1';
+const SAVE_SLOT_KEYS: Record<1 | 2 | 3, string> = {
+  1: 'abyssfront_save_slot_1',
+  2: 'abyssfront_save_slot_2',
+  3: 'abyssfront_save_slot_3',
+};
 
 // Reusable zero-GC math helpers
 const _v1 = new THREE.Vector3();
@@ -206,6 +214,11 @@ export class AbyssfrontEngine {
   private started = false;
   private creative = false;
   private paused = false;
+  private activeSaveSlot: 1 | 2 | 3 = 1;
+  private intro: IntroState | null = null;
+  private introCorridor: ReturnType<typeof buildRepulsCrashCorridor> | null = null;
+  private introImpactSoundPlayed = false;
+  private introKlaxonAccum = 0;
   private ending: null | 'quiet_tide' | 'last_light' = null;
   private freeRoamAfterEnd = false;
   private escapeTimer = 0;
@@ -1396,18 +1409,378 @@ export class AbyssfrontEngine {
 
   // ---- Public API for React UI ----
 
-  public startNewGame(creative: boolean) {
-    this.creative = creative;
-    this.started = true;
-    this.paused = false;
-    this.activeModal = null;
+  private migrateLegacySaveIfNeeded() {
+    try {
+      const legacy = localStorage.getItem(LEGACY_SAVE_KEY);
+      if (legacy && !localStorage.getItem(SAVE_SLOT_KEYS[1])) {
+        localStorage.setItem(SAVE_SLOT_KEYS[1], legacy);
+      }
+    } catch {
+      // ignore storage access issues
+    }
+  }
+
+  public getSaveSlots(): SaveSlotMeta[] {
+    this.migrateLegacySaveIfNeeded();
+    return ([1, 2, 3] as const).map((slotId) => {
+      try {
+        const raw = localStorage.getItem(SAVE_SLOT_KEYS[slotId]);
+        if (!raw) {
+          return {
+            slotId,
+            empty: true,
+            creative: false,
+            savedAt: 0,
+            cell: 'C5',
+            biomeName: 'Shallow Reef',
+            depth: 0,
+            activeMissionId: '1.02',
+            missionTitle: 'First Air & Metal',
+            basesCount: 0,
+            vehiclesCount: 0,
+          };
+        }
+        const d = JSON.parse(raw);
+        const px = typeof d.px === 'number' ? d.px : LANDMARKS.lifepod07.x;
+        const py = typeof d.py === 'number' ? d.py : 1.6;
+        const pz = typeof d.pz === 'number' ? d.pz : LANDMARKS.lifepod07.z;
+        const cellInfo = getCellCoords(px, pz);
+        const activeMissionId = d.activeMissionId ?? '1.02';
+        const mDef = MISSIONS.find((m) => m.id === activeMissionId);
+        return {
+          slotId,
+          empty: false,
+          creative: !!d.creative,
+          savedAt: typeof d.savedAt === 'number' ? d.savedAt : Date.now(),
+          cell: d.cell ?? cellInfo.code,
+          biomeName: d.biomeName ?? BIOME_NAMES[cellInfo.biome],
+          depth: typeof d.depth === 'number' ? d.depth : Math.max(0, Math.round(-py)),
+          activeMissionId,
+          missionTitle: d.missionTitle ?? mDef?.title ?? 'Deep Salvage',
+          basesCount: Array.isArray(d.bases) ? d.bases.length : 0,
+          vehiclesCount: Array.isArray(d.vehicles) ? d.vehicles.length : 0,
+        };
+      } catch {
+        return {
+          slotId,
+          empty: true,
+          creative: false,
+          savedAt: 0,
+          cell: 'C5',
+          biomeName: 'Shallow Reef',
+          depth: 0,
+          activeMissionId: '1.02',
+          missionTitle: 'First Air & Metal',
+          basesCount: 0,
+          vehiclesCount: 0,
+        };
+      }
+    });
+  }
+
+  private clearIntroCorridor() {
+    if (this.introCorridor) {
+      this.scene.remove(this.introCorridor.group);
+      this.introCorridor = null;
+    }
+  }
+
+  private resetWorldEntitiesForSession() {
+    this.clearIntroCorridor();
+    this.intro = null;
+    this.introImpactSoundPlayed = false;
+    this.introKlaxonAccum = 0;
+
+    this.setBuildingMode(null);
+    this.pilotingId = null;
+    this.craftingJob = null;
+    this.ending = null;
+    this.freeRoamAfterEnd = false;
+    this.escapeTimer = 0;
+
+    for (const mesh of this.vehicleMeshes.values()) this.scene.remove(mesh);
+    this.vehicleMeshes.clear();
+    this.vehicles = [];
+
+    for (const mesh of this.baseMeshes.values()) this.scene.remove(mesh);
+    this.baseMeshes.clear();
+    for (const light of this.baseLights.values()) this.scene.remove(light);
+    this.baseLights.clear();
+    this.bases = [];
+    this.ternMesh.visible = false;
+
+    this.hp = 100;
+    this.maxHp = 100;
+    this.nutrition = 100;
+    this.hydration = 100;
+    this.o2 = 75;
+    this.o2Max = 75;
+    this.suitIntegrity = 100;
+    this.maxSuitIntegrity = 100;
+    this.radiation = 0;
+    this.crouching = false;
+    this.holstered = false;
+    this.tool = 'weapon';
+    this.weapon = 'plasma_rifle';
+    this.ownedTools = { scanner: true, builder: true, repair: false, cutter: false };
+    this.ownedWeapons = { plasma_rifle: true, pulse_shotgun: false, ion_sniper: false };
+    this.magAmmo = { plasma_rifle: 30, pulse_shotgun: 0, ion_sniper: 0 };
+    this.hasSuppressor = false;
+    this.hasExtMag = false;
+    this.suitTier = 'standard';
+    this.tankTier = 1;
+    this.unlockedIds = new Set(['u_start']);
+    this.completedMissions = new Set(['1.01']);
+    this.activeMissionId = '1.02';
+    this.discoveredLogs = new Set();
+    this.discoveredCells = new Set(['C5']);
+    this.scanCounts = {};
+    this.ternRestored = false;
+    this.ternPadBuilt = false;
+    this.ternCharges = 3;
+    this.latticeAlert = 0;
+    this.basePower = 120;
+    this.basePowerCap = 300;
+    this.flags = {
+      podFabRepaired: false,
+      podWaterRepaired: false,
+      auxPowerFixed: false,
+      cargoCutOpen: false,
+      bridgeBlackBoxTaken: false,
+      armoryOpened: false,
+      coolantFixed: false,
+      reactorPowerOn: false,
+      flightCoreTaken: false,
+      glyphDoorOpened: false,
+      blackBoxDecoded: false,
+      authorityCodeObtained: false,
+      heartspireUnlocked: false,
+      nodeTideDone: false,
+      nodeEchoDone: false,
+      nodeWeightDone: false,
+      custodianPhase: 0,
+      custodianHp: 3000,
+      custodianMaxHp: 3000,
+      custodianExposed: false,
+      echoSpeechTimer: 0,
+      echoLine: '',
+      disableHoldTimer: 0,
+      wardenAlive: true,
+    };
+  }
+
+  private startCrashIntro() {
+    this.clearIntroCorridor();
+    this.introCorridor = buildRepulsCrashCorridor();
+    this.introCorridor.group.position.set(0, 920, 0);
+    this.scene.add(this.introCorridor.group);
+
+    this.px = 0;
+    this.py = 921.8;
+    this.pz = 10.5;
+    this.yaw = 0;
+    this.pitch = 0.02;
+    this.camRoll = 0;
+    this.vel.set(0, 0, 0);
+    this.inLifepod = false;
+    this.introImpactSoundPlayed = false;
+    this.introKlaxonAccum = 0;
+    this.intro = {
+      phase: 'evacuate',
+      timer: 0,
+      blackoutAlpha: 0,
+      headline: 'TFR-419 REPULS · HULL FAILURE',
+      subtitle: 'Atmospheric breakup! Move forward down Deck 4 and board Lifepod 07.',
+    };
+    this.refreshViewModel();
+    sound.playKlaxon();
+  }
+
+  public skipIntro() {
+    if (!this.intro) return;
+    this.clearIntroCorridor();
+    this.intro = null;
     this.px = LANDMARKS.lifepod07.x;
     this.py = this.lifepodY + 1.95;
     this.pz = LANDMARKS.lifepod07.z + 0.7;
     this.inLifepod = true;
     this.yaw = 0.75;
     this.pitch = -0.05;
+    this.camRoll = 0;
     this.vel.set(0, 0, 0);
+    this.o2 = this.o2Max;
+    this.hp = this.maxHp;
+    this.refreshViewModel();
+    this.saveGame(this.activeSaveSlot);
+    this.toast('Lifepod 07 Impact — Gather 4 Titanium Ore & 2 Silicate from Landfall Cove to repair the Fabricator.');
+    this.emitSnapshot();
+  }
+
+  private updateIntro(dt: number) {
+    if (!this.intro || !this.introCorridor) return;
+    this.intro.timer += dt;
+    const t = this.intro.timer;
+
+    // Dark smoky orbital crash environment
+    (this.scene.background as THREE.Color).setHex(0x160d10);
+    (this.scene.fog as THREE.FogExp2).color.setHex(0x1b1014);
+    (this.scene.fog as THREE.FogExp2).density = 0.026;
+    this.hemiLight.intensity = 0.65;
+    this.sunLight.intensity = 0.85;
+    this.headLamp.intensity = 2.6;
+
+    // Pulsing emergency klaxon lights & structural hull shudder
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012);
+    for (const kl of this.introCorridor.klaxonLights) {
+      kl.intensity = 1.5 + pulse * 5.2;
+    }
+    this.introCorridor.group.rotation.z = Math.sin(performance.now() * 0.0022) * 0.04;
+
+    if (this.intro.phase === 'evacuate') {
+      this.introKlaxonAccum += dt;
+      if (this.introKlaxonAccum >= 2.8) {
+        this.introKlaxonAccum = 0;
+        sound.playKlaxon();
+      }
+
+      const fwdIn = this.joyY + (this.keys.has('KeyW') || this.keys.has('ArrowUp') ? 1 : 0) - (this.keys.has('KeyS') || this.keys.has('ArrowDown') ? 1 : 0);
+      const strafeIn = this.joyX + (this.keys.has('KeyD') || this.keys.has('ArrowRight') ? 1 : 0) - (this.keys.has('KeyA') || this.keys.has('ArrowLeft') ? 1 : 0);
+      _euler.set(0, this.yaw, 0, 'YXZ');
+      const fwd = _v1.set(0, 0, -1).applyEuler(_euler);
+      const right = _v2.set(1, 0, 0).applyEuler(_euler);
+      const wish = _v3.set(0, 0, 0).addScaledVector(fwd, fwdIn).addScaledVector(right, strafeIn);
+      if (wish.lengthSq() > 1) wish.normalize();
+      const sprinting = this.keys.has('ShiftLeft') || this.touchSprint;
+      wish.multiplyScalar(sprinting ? 8.2 : 5.6);
+
+      this.vel.x = THREE.MathUtils.lerp(this.vel.x, wish.x, Math.min(1, 9 * dt));
+      this.vel.z = THREE.MathUtils.lerp(this.vel.z, wish.z, Math.min(1, 9 * dt));
+      this.px = THREE.MathUtils.clamp(this.px + this.vel.x * dt, -1.9, 1.9);
+      this.pz = THREE.MathUtils.clamp(this.pz + this.vel.z * dt, -12.0, 11.8);
+      this.py = 921.8;
+
+      const shakeX = Math.sin(performance.now() * 0.032) * 0.035;
+      const shakeY = Math.cos(performance.now() * 0.041) * 0.025;
+      this.camera.position.set(this.px + shakeX, this.py + shakeY, this.pz);
+      this.camera.rotation.set(this.pitch, this.yaw, this.introCorridor.group.rotation.z * 0.5, 'YXZ');
+
+      this.promptText = this.pz <= -6.8 ? '[E] Board Lifepod 07' : null;
+      if (this.pz <= -9.6) {
+        this.beginIntroEjection();
+      }
+    } else if (this.intro.phase === 'ejection') {
+      this.promptText = null;
+      // Slide blast hatch closed
+      this.introCorridor.hatchDoor.position.x = THREE.MathUtils.damp(this.introCorridor.hatchDoor.position.x, 0, 7, dt);
+
+      // Seat camera in launch cradle
+      this.px = THREE.MathUtils.damp(this.px, 0, 6, dt);
+      this.pz = THREE.MathUtils.damp(this.pz, -11.45, 6, dt);
+      this.py = THREE.MathUtils.damp(this.py, 921.68, 6, dt);
+      this.yaw = THREE.MathUtils.damp(this.yaw, 0, 6, dt);
+      this.pitch = THREE.MathUtils.damp(this.pitch, -0.06, 6, dt);
+
+      const intensity = Math.min(1, t / 2.2) * 0.09;
+      const jx = (Math.random() - 0.5) * intensity;
+      const jy = (Math.random() - 0.5) * intensity;
+      this.camera.position.set(this.px + jx, this.py + jy, this.pz);
+      this.camera.rotation.set(this.pitch + jy * 0.4, this.yaw + jx * 0.4, (Math.random() - 0.5) * intensity * 0.7, 'YXZ');
+
+      if (t >= 2.2) {
+        this.intro.subtitle = 'WARNING: Loose emergency fire extinguisher bracket failing!';
+        this.introCorridor.fireExtinguisher.rotation.z = Math.sin(t * 42) * 0.22;
+      }
+      if (t >= 3.6) {
+        this.intro.phase = 'impact';
+        this.intro.timer = 0;
+        this.intro.headline = 'UNSECURED HARDWARE IMPACT';
+        this.intro.subtitle = 'Loose fire extinguisher detached!';
+      }
+    } else if (this.intro.phase === 'impact') {
+      const k = Math.min(1, t / 0.42);
+      // Hurl tumbling fire extinguisher straight into camera visor
+      const ext = this.introCorridor.fireExtinguisher;
+      ext.position.set(
+        THREE.MathUtils.lerp(-1.05, 0, k),
+        THREE.MathUtils.lerp(1.75, 1.68, k),
+        THREE.MathUtils.lerp(-12.35, -11.62, k)
+      );
+      ext.rotation.set(k * 9.5, k * 5.2, k * 7.8);
+
+      if (t >= 0.42 && !this.introImpactSoundPlayed) {
+        this.introImpactSoundPlayed = true;
+        sound.playExtinguisherImpact();
+        this.pitch = 0.32;
+        this.camRoll = -0.35;
+      }
+
+      if (t >= 0.42) {
+        this.intro.blackoutAlpha = Math.min(1, (t - 0.42) / 0.55);
+      }
+      this.camera.position.set(this.px + (Math.random() - 0.5) * 0.14, this.py + (Math.random() - 0.5) * 0.14, this.pz);
+      this.camera.rotation.set(this.pitch, this.yaw, this.camRoll, 'YXZ');
+
+      if (t >= 1.55) {
+        this.clearIntroCorridor();
+        this.px = LANDMARKS.lifepod07.x;
+        this.py = this.lifepodY + 1.95;
+        this.pz = LANDMARKS.lifepod07.z + 0.7;
+        this.inLifepod = true;
+        this.yaw = 0.75;
+        this.pitch = -0.05;
+        this.camRoll = 0;
+        this.vel.set(0, 0, 0);
+        this.o2 = this.o2Max;
+        this.hp = this.maxHp;
+        this.refreshViewModel();
+        this.intro.phase = 'wake';
+        this.intro.timer = 0;
+        this.intro.blackoutAlpha = 1;
+        this.intro.headline = 'THETA-9 · LANDFALL COVE';
+        this.intro.subtitle = 'Emergency Reboot: Lifepod 07 splashdown complete. Vital signs nominal.';
+      }
+    } else if (this.intro.phase === 'wake') {
+      this.intro.blackoutAlpha = Math.max(0, 1 - t / 1.7);
+      this.updateAtmosphere(0, false);
+      this.camera.position.set(this.px, this.py, this.pz);
+      this.camera.rotation.set(this.pitch, this.yaw, 0, 'YXZ');
+      if (t >= 1.85) {
+        this.intro = null;
+        this.saveGame(this.activeSaveSlot);
+        this.toast('Lifepod 07 Impact — Gather 4 Titanium Ore & 2 Silicate from Landfall Cove to repair the Fabricator.');
+        this.emitSnapshot();
+      }
+    }
+
+    this.snapshotAccum += dt;
+    if (this.snapshotAccum >= 0.06) {
+      this.snapshotAccum = 0;
+      this.emitSnapshot();
+    }
+  }
+
+  private beginIntroEjection() {
+    if (!this.intro || this.intro.phase !== 'evacuate') return;
+    this.intro.phase = 'ejection';
+    this.intro.timer = 0;
+    this.intro.headline = 'LIFEPOD 07 LAUNCH SEQUENCE';
+    this.intro.subtitle = 'Hatch sealed — booster ignition! Brace for atmospheric drop.';
+    this.promptText = null;
+    sound.playHatch();
+    sound.playLaunchRumble();
+    this.emitSnapshot();
+  }
+
+  // ---- Public API for React UI ----
+
+  public startNewGame(creative: boolean, slotId: 1 | 2 | 3 = 1, skipIntro = false) {
+    this.resetWorldEntitiesForSession();
+    this.activeSaveSlot = slotId;
+    this.creative = creative;
+    this.started = true;
+    this.paused = false;
+    this.activeModal = null;
+
     // Starting kit (Mission 1.01)
     this.inventory = creative
       ? {
@@ -1440,6 +1813,13 @@ export class AbyssfrontEngine {
         };
 
     if (creative) {
+      this.px = LANDMARKS.lifepod07.x;
+      this.py = this.lifepodY + 1.95;
+      this.pz = LANDMARKS.lifepod07.z + 0.7;
+      this.inLifepod = true;
+      this.yaw = 0.75;
+      this.pitch = -0.05;
+      this.vel.set(0, 0, 0);
       for (const r of RECIPES) this.unlockedIds.add(r.unlockId);
       this.ownedTools = { scanner: true, builder: true, repair: true, cutter: true };
       this.ownedWeapons = { plasma_rifle: true, pulse_shotgun: true, ion_sniper: true };
@@ -1452,31 +1832,68 @@ export class AbyssfrontEngine {
       this.flags.authorityCodeObtained = true;
       this.flags.podFabRepaired = true;
       this.flags.podWaterRepaired = true;
+      this.refreshViewModel();
+      this.saveGame(slotId);
       this.toast('Creative Mode: All blueprints, tools & infinite vitals active. Open Map [Tab] to warp anywhere.');
+    } else if (!skipIntro) {
+      this.startCrashIntro();
     } else {
+      this.px = LANDMARKS.lifepod07.x;
+      this.py = this.lifepodY + 1.95;
+      this.pz = LANDMARKS.lifepod07.z + 0.7;
+      this.inLifepod = true;
+      this.yaw = 0.75;
+      this.pitch = -0.05;
+      this.vel.set(0, 0, 0);
+      this.refreshViewModel();
+      this.saveGame(slotId);
       this.toast('Lifepod 07 Impact — Gather 4 Titanium Ore & 2 Silicate from Landfall Cove to repair the Fabricator.');
     }
     this.emitSnapshot();
   }
 
-  public hasSavedGame(): boolean {
-    try {
-      return !!localStorage.getItem(SAVE_KEY);
-    } catch {
-      return false;
-    }
+  public returnToMainMenu() {
+    if (document.pointerLockElement) document.exitPointerLock?.();
+    this.clearIntroCorridor();
+    this.intro = null;
+    this.started = false;
+    this.paused = false;
+    this.activeModal = null;
+    this.firing = false;
+    this.scanning = false;
+    this.keys.clear();
+    this.emitSnapshot();
   }
 
-  public loadSavedGame(): boolean {
+  public hasSavedGame(): boolean {
+    return this.getSaveSlots().some((s) => !s.empty);
+  }
+
+  public deleteSaveSlot(slotId: 1 | 2 | 3) {
     try {
-      const raw = localStorage.getItem(SAVE_KEY);
+      localStorage.removeItem(SAVE_SLOT_KEYS[slotId]);
+      if (slotId === 1) localStorage.removeItem(LEGACY_SAVE_KEY);
+    } catch {
+      // ignore storage issues
+    }
+    this.emitSnapshot();
+  }
+
+  public loadSavedGame(slotId: 1 | 2 | 3 = 1): boolean {
+    this.migrateLegacySaveIfNeeded();
+    try {
+      const raw = localStorage.getItem(SAVE_SLOT_KEYS[slotId]);
       if (!raw) return false;
       const d = JSON.parse(raw);
+      this.resetWorldEntitiesForSession();
+      this.activeSaveSlot = slotId;
       this.started = true;
+      this.paused = false;
+      this.activeModal = null;
       this.creative = !!d.creative;
-      this.px = d.px ?? this.px;
-      this.py = d.py ?? this.py;
-      this.pz = d.pz ?? this.pz;
+      this.px = d.px ?? LANDMARKS.lifepod07.x;
+      this.py = d.py ?? this.lifepodY + 1.95;
+      this.pz = d.pz ?? LANDMARKS.lifepod07.z + 0.7;
       this.inLifepod = Math.hypot(this.px - LANDMARKS.lifepod07.x, this.pz - LANDMARKS.lifepod07.z) < 2.4 && this.py >= this.lifepodY;
       this.hp = d.hp ?? 100;
       this.nutrition = d.nutrition ?? 100;
@@ -1512,7 +1929,8 @@ export class AbyssfrontEngine {
           this.placeBaseState(b);
         }
       }
-      this.toast('Dive telemetry restored from last save.');
+      this.refreshViewModel();
+      this.toast(`Slot ${slotId} (${this.creative ? 'Creative' : 'Survival'}) loaded.`);
       this.emitSnapshot();
       return true;
     } catch {
@@ -1520,13 +1938,21 @@ export class AbyssfrontEngine {
     }
   }
 
-  private saveGame() {
-    if (!this.started) return;
+  public saveGame(slotId: 1 | 2 | 3 = this.activeSaveSlot, showToast = false) {
+    if (!this.started || this.intro) return;
+    this.activeSaveSlot = slotId;
+    const cellInfo = getCellCoords(this.px, this.pz);
+    const mDef = MISSIONS.find((m) => m.id === this.activeMissionId);
     try {
       localStorage.setItem(
-        SAVE_KEY,
+        SAVE_SLOT_KEYS[slotId],
         JSON.stringify({
           creative: this.creative,
+          savedAt: Date.now(),
+          cell: cellInfo.code,
+          biomeName: BIOME_NAMES[cellInfo.biome],
+          depth: Math.max(0, Math.round(-this.py)),
+          missionTitle: mDef?.title ?? 'Deep Salvage',
           px: this.px,
           py: this.py,
           pz: this.pz,
@@ -1557,6 +1983,10 @@ export class AbyssfrontEngine {
           bases: this.bases,
         })
       );
+      if (showToast) {
+        this.toast(`Saved to Slot ${slotId} (${this.creative ? 'Creative' : 'Survival'}).`);
+        this.emitSnapshot();
+      }
     } catch {
       // ignore storage quota errors
     }
@@ -1631,6 +2061,7 @@ export class AbyssfrontEngine {
   }
 
   public openModal(modal: ActiveModal) {
+    if (this.intro && modal) return;
     this.activeModal = modal;
     this.paused = !!modal;
     this.firing = false;
@@ -1646,10 +2077,15 @@ export class AbyssfrontEngine {
   public setTool(t: ToolMode) {
     if (t === 'repair' && !this.ownedTools.repair && !this.creative) return this.toast('Craft Repair Tool first.');
     if (t === 'cutter' && !this.ownedTools.cutter && !this.creative) return this.toast('Craft Laser Cutter first.');
+    const alreadyBuilder = this.tool === 'builder' && !this.holstered;
     this.tool = t;
     if (t !== 'builder') this.setBuildingMode(null);
     this.holstered = false;
     this.refreshViewModel();
+    if (t === 'builder' && alreadyBuilder && !this.buildingMode) {
+      this.openModal({ type: 'station', station: 'builder' });
+      return;
+    }
     this.emitSnapshot();
   }
 
@@ -1680,6 +2116,7 @@ export class AbyssfrontEngine {
     }
     if (item) {
       this.tool = 'builder';
+      this.holstered = false;
       this.activeModal = null;
       this.paused = false;
       this.ghostMesh = buildBaseStructure(item as BasePieceState['type']);
@@ -1687,7 +2124,10 @@ export class AbyssfrontEngine {
         if ((o as THREE.Mesh).isMesh) (o as THREE.Mesh).material = this.ghostMat;
       });
       this.scene.add(this.ghostMesh);
+      this.updateBuildingGhost();
       this.toast(`Placing ${ITEMS[item].name} — Click/[E] build, [Q/R] rotate, [Esc] cancel.`);
+    } else {
+      this.buildingValid = false;
     }
     this.refreshViewModel();
     this.emitSnapshot();
@@ -2048,19 +2488,30 @@ export class AbyssfrontEngine {
   public activateVehicleBoost() {
     const piloted = this.getPiloted();
     if (!piloted) return;
-    if (piloted.type === 'hover_skiff') {
-      if (!piloted.upgrades.skiffBoost && !this.creative) return this.toast('Craft Skiff Boost Mod at Workbench first.');
-      if (piloted.boostCd > 0) return this.toast(`Boost cooling down (${Math.ceil(piloted.boostCd)}s).`);
-      piloted.boostActive = 4;
-      piloted.boostCd = 20;
+    if (piloted.type === 'prawn') {
+      const floorY = terrainHeightAt(this.px, this.pz);
+      if (this.py > floorY + 6.5) return;
+      const jumpPower = piloted.upgrades.thrusterMod ? 13.5 : 9.2;
+      this.vel.y = jumpPower;
+      const fwdX = -Math.sin(this.yaw);
+      const fwdZ = -Math.cos(this.yaw);
+      this.vel.x += fwdX * 4;
+      this.vel.z += fwdZ * 4;
       sound.playScan();
-      this.toast('Skiff Boost engaged!');
       this.emitSnapshot();
-    } else if (piloted.type === 'prawn') {
-      if (!piloted.upgrades.thrusterMod && !this.creative) return this.toast('Craft PRAWN Thruster Jump Mod first.');
-      this.vel.y = 12;
-      sound.playScan();
+      return;
     }
+
+    if (piloted.boostCd > 0) return this.toast(`Boost cooling down (${Math.ceil(piloted.boostCd)}s).`);
+    if (!this.creative && piloted.power < 6) return this.toast('Insufficient vehicle power for Boost.');
+    if (!this.creative) piloted.power = Math.max(0, piloted.power - 6);
+
+    const hasUpgradedBoost = piloted.type === 'hover_skiff' && piloted.upgrades.skiffBoost;
+    piloted.boostActive = hasUpgradedBoost ? 4.5 : 3.2;
+    piloted.boostCd = hasUpgradedBoost ? 12 : 14;
+    sound.playScan();
+    this.toast(`${piloted.name} Boost engaged!`);
+    this.emitSnapshot();
   }
 
   public repairAndChargeVehicle(vehicleId: string) {
@@ -2349,6 +2800,11 @@ export class AbyssfrontEngine {
       if (e.code === 'Space' || e.code === 'Tab') e.preventDefault();
       if (e.repeat) return;
 
+      if (this.intro) {
+        if (e.code === 'KeyE') this.interact();
+        return;
+      }
+
       if (e.code === 'KeyE') this.interact();
       else if (e.code === 'KeyF') this.scanning = true;
       else if (e.code === 'KeyB') this.openModal({ type: 'station', station: 'builder' });
@@ -2468,7 +2924,7 @@ export class AbyssfrontEngine {
         if (document.pointerLockElement !== canvas && this.mouseDragActive && !this.mouseDragMoved && this.started && !this.activeModal && !this.ending) {
           if (this.mouseButton === 0) {
             if (this.buildingMode) this.tryPlaceBuilding();
-            else if (this.tool === 'weapon' && !this.holstered) this.fireActiveWeapon();
+            else if (!this.holstered) this.fireActiveWeapon();
           }
         }
         this.mouseDragActive = false;
@@ -2538,6 +2994,13 @@ export class AbyssfrontEngine {
 
   public interact() {
     if (!this.started || this.activeModal || this.ending) return;
+
+    if (this.intro) {
+      if (this.intro.phase === 'evacuate' && this.pz <= -6.8) {
+        this.beginIntroEjection();
+      }
+      return;
+    }
 
     // 1. Building placement
     if (this.buildingMode) {
@@ -2758,7 +3221,21 @@ export class AbyssfrontEngine {
       return;
     }
 
-    if (this.holstered || this.tool !== 'weapon') return;
+    if (this.holstered) return;
+    if (this.tool === 'builder') {
+      this.fireCd = 0.35;
+      this.firing = false;
+      if (this.buildingMode) this.tryPlaceBuilding();
+      else this.openModal({ type: 'station', station: 'builder' });
+      return;
+    }
+    if (this.tool === 'repair' || this.tool === 'cutter') {
+      this.fireCd = 0.35;
+      this.firing = false;
+      this.interact();
+      return;
+    }
+    if (this.tool !== 'weapon') return;
     const stats = WEAPONS[this.weapon];
     if (this.magAmmo[this.weapon] <= 0) {
       this.startReload();
@@ -2930,7 +3407,8 @@ export class AbyssfrontEngine {
     if (this.disposed) return;
     const dt = Math.min(0.05, this.clock.getDelta());
     if (this.started && !this.paused && !this.ending) {
-      this.updateSimulation(dt);
+      if (this.intro) this.updateIntro(dt);
+      else this.updateSimulation(dt);
     } else if (this.started && this.paused && !this.ending && this.craftingJob) {
       // Allow active fabricator jobs to progress smoothly while viewing the Fabricator PDA
       this.craftingJob.remaining -= dt;
@@ -3068,13 +3546,26 @@ export class AbyssfrontEngine {
       if (piloted.boostActive > 0) piloted.boostActive = Math.max(0, piloted.boostActive - dt);
       if (piloted.maelstromReload > 0) piloted.maelstromReload = Math.max(0, piloted.maelstromReload - dt);
 
-      if ((this.keys.has('ShiftLeft') || this.touchSprint) && piloted.type === 'hover_skiff' && piloted.upgrades.skiffBoost && piloted.boostCd <= 0) {
-        piloted.boostActive = 4;
-        piloted.boostCd = 20;
-        this.toast('Skiff Boost engaged!');
+      if ((this.keys.has('ShiftLeft') || this.touchSprint) && piloted.boostCd <= 0 && (this.creative || piloted.power >= 6)) {
+        const hasUpgradedBoost = piloted.type === 'hover_skiff' && piloted.upgrades.skiffBoost;
+        if (piloted.type !== 'prawn') {
+          if (!this.creative) piloted.power = Math.max(0, piloted.power - 6);
+          piloted.boostActive = hasUpgradedBoost ? 4.5 : 3.2;
+          piloted.boostCd = hasUpgradedBoost ? 12 : 14;
+          sound.playScan();
+          this.toast(`${piloted.name} Boost engaged!`);
+        }
       }
 
-      speed = piloted.speed + (piloted.boostActive > 0 ? 3 : 0);
+      const boostBonus =
+        piloted.boostActive > 0
+          ? piloted.type === 'stingray'
+            ? 4
+            : piloted.type === 'hover_skiff' && piloted.upgrades.skiffBoost
+            ? 5
+            : 3.5
+          : 0;
+      speed = piloted.speed + boostBonus;
       if (piloted.power <= 0 && !this.creative) speed *= 0.25;
       else if (wish.lengthSq() > 0.01 && !this.creative) {
         const drain = piloted.type === 'bulwark' ? 1.2 : piloted.type === 'stingray' ? 0.5 : piloted.type === 'hover_skiff' ? 0.4 : 0.3;
@@ -3088,7 +3579,13 @@ export class AbyssfrontEngine {
     }
 
     wish.multiplyScalar(speed);
-    this.vel.lerp(wish, Math.min(1, 7.5 * dt));
+    const lerpAlpha = Math.min(1, 7.5 * dt);
+    if (isSwimming || inSubmersible) {
+      this.vel.lerp(wish, lerpAlpha);
+    } else {
+      this.vel.x = THREE.MathUtils.lerp(this.vel.x, wish.x, lerpAlpha);
+      this.vel.z = THREE.MathUtils.lerp(this.vel.z, wish.z, lerpAlpha);
+    }
     this.px = THREE.MathUtils.clamp(this.px + this.vel.x * dt, -HALF_WORLD + 20, HALF_WORLD - 20);
     this.pz = THREE.MathUtils.clamp(this.pz + this.vel.z * dt, -HALF_WORLD + 20, HALF_WORLD - 20);
 
@@ -3105,8 +3602,8 @@ export class AbyssfrontEngine {
       if (this.py > -0.6) this.py = -0.6;
       if (this.py < floorY + 2.2) this.py = floorY + 2.2;
     } else if (piloted?.type === 'prawn') {
-      if (this.keys.has('Space') && piloted.upgrades.thrusterMod && this.py <= floorY + 3.6) {
-        this.vel.y = 12;
+      if ((this.keys.has('Space') || this.touchVert > 0) && this.py <= floorY + 3.6) {
+        this.vel.y = piloted.upgrades.thrusterMod ? 13.5 : 9.2;
       }
       this.vel.y -= 14 * dt;
       this.py += this.vel.y * dt;
@@ -4027,6 +4524,9 @@ export class AbyssfrontEngine {
       started: this.started,
       creative: this.creative,
       paused: this.paused,
+      activeSaveSlot: this.activeSaveSlot,
+      saveSlots: this.getSaveSlots(),
+      intro: this.intro ? { ...this.intro } : null,
       ending: this.ending,
       freeRoamAfterEnd: this.freeRoamAfterEnd,
       escapeTimer: this.escapeTimer,
